@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
   <title>Pilote — Gestion de projets</title>
-  <meta name="description" content="Application personnelle de gestion de projets, pensée pour décharger mentalement." />
+  <meta name="description" content="Application personnelle de gestion de projets." />
   <meta name="theme-color" content="#2d2d2b" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.35.0/dist/tabler-icons.min.css" />
   <style>
@@ -539,7 +539,7 @@ textarea.input { resize: vertical; min-height: 70px; line-height: 1.5; }
 
   <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.13.0/firebase-app.js";
-import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.13.0/firebase-auth.js";
+import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.13.0/firebase-auth.js";
 import { getFirestore, collection, doc, setDoc, deleteDoc, getDocs, onSnapshot } from "https://www.gstatic.com/firebasejs/12.13.0/firebase-firestore.js";
 
 /* ============================================================
@@ -967,9 +967,9 @@ function renderSidebar() {
   <div class="sidebar-spacer"></div>
   <div class="nav-group">
     ${fbUser
-      ? `<div class="nav-item" style="cursor:default;color:var(--text)"><i class="ti ti-cloud-check" style="color:var(--green)"></i> <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px">${esc(fbUser.email || 'Synchronisé')}</span></div>
-         <button class="nav-item" data-action="sign-out"><i class="ti ti-logout"></i> Se déconnecter</button>`
-      : `<button class="nav-item" data-action="sign-in"><i class="ti ti-cloud"></i> Se connecter (synchro)</button>`}
+      ? `<div class="nav-item" style="cursor:default;color:var(--text)"><i class="ti ti-cloud-check" style="color:var(--green)"></i> <span style="font-size:12px">Notes synchronisées</span></div>
+         <button class="nav-item" data-action="sign-out"><i class="ti ti-logout"></i> Désactiver la synchro</button>`
+      : `<button class="nav-item" data-action="sign-in"><i class="ti ti-cloud"></i> Activer la synchro</button>`}
     <button class="nav-item" data-action="settings"><i class="ti ti-settings"></i> Paramètres & données</button>
   </div>`;
 }
@@ -1837,7 +1837,8 @@ document.addEventListener('click', async (e) => {
     case 'week-next': weekOffset++; renderRoute(); break;
     case 'week-today': weekOffset=0; renderRoute(); break;
     case 'settings': settingsModal(); break;
-    case 'sign-in': await signIn(); break;
+    case 'sign-in': authModal(); break;
+    case 'do-login': await doLogin(); break;
     case 'sign-out': await signOutUser(); break;
     case 'export-data': await exportData(); break;
     case 'import-data': document.getElementById('import-input')?.click(); break;
@@ -1890,15 +1891,51 @@ function initFirebase() {
   } catch (e) { console.error('Firebase init', e); }
 }
 
-async function signIn() {
-  if (!fbAuth) return;
-  const provider = new GoogleAuthProvider();
+// Identifiant interne fixe (non secret) : tu n'entres jamais que ton mot de passe.
+const AUTH_EMAIL = 'acces@pilote-rudax.app';
+
+function authModal() {
+  openModal(`
+    <div class="modal-head"><span class="modal-title">Synchronisation</span>
+      <button class="btn-icon btn-ghost" data-action="close-modal"><i class="ti ti-x"></i></button></div>
+    <div class="modal-body">
+      <div style="font-size:12.5px;color:var(--text-2);line-height:1.6;margin-bottom:12px">
+        Choisis un mot de passe (6 caractères minimum) pour sauvegarder et retrouver tes notes sur tous tes appareils.
+        La 1<sup>re</sup> fois, ce mot de passe est enregistré ; ensuite tu le retapes simplement sur chaque appareil.
+        Il n'est jamais écrit dans le code — il reste secret.
+      </div>
+      <div class="field"><label>Mot de passe</label>
+        <input type="password" class="input" id="auth-pwd" placeholder="Ton mot de passe" autocomplete="current-password" /></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" data-action="close-modal">Annuler</button>
+      <button class="btn btn-primary" data-action="do-login">Valider</button>
+    </div>`);
+  const inp = document.getElementById('auth-pwd');
+  if (inp) inp.addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+}
+
+async function doLogin() {
+  const pwd = document.getElementById('auth-pwd')?.value || '';
+  if (pwd.length < 6) { toast('Au moins 6 caractères', 'ti-alert-triangle'); return; }
+  if (!fbAuth) { toast('Service indisponible', 'ti-alert-triangle'); return; }
   try {
-    await signInWithPopup(fbAuth, provider);
-    toast('Connecté — synchro activée', 'ti-cloud-check');
+    try {
+      await createUserWithEmailAndPassword(fbAuth, AUTH_EMAIL, pwd); // toute première fois
+      toast('Mot de passe enregistré — synchro activée', 'ti-cloud-check');
+    } catch (e) {
+      if (e.code === 'auth/email-already-in-use') {
+        await signInWithEmailAndPassword(fbAuth, AUTH_EMAIL, pwd); // connexions suivantes
+        toast('Synchro activée', 'ti-cloud-check');
+      } else { throw e; }
+    }
+    closeModal();
   } catch (e) {
-    try { await signInWithRedirect(fbAuth, provider); }
-    catch (e2) { toast('Connexion impossible', 'ti-alert-triangle'); console.error(e2); }
+    console.error('login', e);
+    if (e.code === 'auth/wrong-password' || e.code === 'auth/invalid-credential') toast('Mot de passe incorrect', 'ti-alert-triangle');
+    else if (e.code === 'auth/too-many-requests') toast('Trop de tentatives — réessaie plus tard', 'ti-alert-triangle');
+    else if (e.code === 'auth/operation-not-allowed') toast('Active « Email/Password » dans Firebase', 'ti-alert-triangle');
+    else toast('Connexion impossible', 'ti-alert-triangle');
   }
 }
 async function signOutUser() {
